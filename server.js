@@ -7,75 +7,173 @@ const port = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// ✅ الصفحة الرئيسية للتأكد إن السيرفر شغال
+// ✅ الصفحة الرئيسية للفحص
 app.get("/", (req, res) => {
-  res.send("✅ StaffSense Full API is running...");
+  res.send("✅ StaffSense Full HR API running...");
 });
 
-// 🧍 قسم الموظفين
-let employees = [];
-app.get("/employees", (req, res) => res.json(employees));
-app.post("/employees", (req, res) => {
-  const emp = { id: Date.now(), ...req.body };
-  employees.push(emp);
-  res.status(201).json(emp);
+// ===============================
+// ✅ البيانات المؤقتة في الذاكرة
+// ===============================
+let attendance = []; // حضور وانصراف
+let permits = []; // تصاريح
+let missions = []; // مأموريات
+
+// ===============================
+// 🕒 أدوات الوقت
+// ===============================
+function minutesDiff(a, b) {
+  return Math.max(0, Math.round((a.getTime() - b.getTime()) / 60000));
+}
+function startOfMonth(date = new Date()) {
+  const d = new Date(date);
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function startOfFiscalYear(date = new Date()) {
+  const d = new Date(date);
+  const year = d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+  return new Date(year, 6, 1, 0, 0, 0, 0);
+}
+
+// ===============================
+// ✅ تسجيل الحضور
+// ===============================
+app.post("/attendance/checkin", (req, res) => {
+  const { name, at, permitType } = req.body;
+  if (!name) return res.status(400).json({ error: "الاسم مطلوب" });
+
+  const now = at ? new Date(at) : new Date();
+  const eight = new Date(now);
+  eight.setHours(8, 0, 0, 0);
+  const eight15 = new Date(now);
+  eight15.setHours(8, 15, 0, 0);
+
+  let record = {
+    id: Date.now(),
+    name,
+    checkIn: now.toISOString(),
+    status: "حضور",
+    delayMinutes: 0,
+  };
+
+  if (now <= eight15) {
+    record.delayMinutes = minutesDiff(now, eight);
+    record.status = record.delayMinutes > 0 ? "تأخير" : "حضور";
+    attendance.push(record);
+    res.status(201).json(record);
+  } else {
+    // بعد 8:15 → تصريح
+    if (!permitType || !["personal", "business"].includes(permitType))
+      return res.status(400).json({ error: "بعد 8:15 يلزم تصريح شخصي أو مصلحي" });
+
+    const mins = minutesDiff(now, eight);
+    const permit = {
+      id: Date.now(),
+      name,
+      date: now.toISOString(),
+      type: permitType,
+      minutes: mins,
+    };
+    permits.push(permit);
+    record.status = "تصريح";
+    attendance.push(record);
+    res.status(201).json({ record, permit });
+  }
 });
 
-// 🕒 قسم الحضور والانصراف
-let attendance = [];
-app.get("/attendance", (req, res) => res.json(attendance));
-app.post("/attendance", (req, res) => {
-  const record = { id: Date.now(), ...req.body };
+// ✅ تسجيل الانصراف
+app.post("/attendance/checkout", (req, res) => {
+  const { name, at, permitType } = req.body;
+  if (!name) return res.status(400).json({ error: "الاسم مطلوب" });
+
+  const now = at ? new Date(at) : new Date();
+  const threePM = new Date(now);
+  threePM.setHours(15, 0, 0, 0);
+  const fivePM = new Date(now);
+  fivePM.setHours(17, 0, 0, 0);
+
+  let record = attendance.find(
+    (r) => r.name === name && !r.checkOut
+  );
+
+  if (!record)
+    record = { id: Date.now(), name, checkIn: null, status: "غير محدد" };
+
+  record.checkOut = now.toISOString();
+
+  if (now < threePM) {
+    if (!permitType || !["personal", "business"].includes(permitType))
+      return res.status(400).json({ error: "الانصراف قبل 15:00 يتطلب تصريح" });
+    const mins = minutesDiff(threePM, now);
+    const permit = {
+      id: Date.now(),
+      name,
+      date: now.toISOString(),
+      type: permitType,
+      minutes: mins,
+      direction: "خروج",
+    };
+    permits.push(permit);
+    record.status = "انصراف بتصريح";
+  } else if (now >= fivePM) {
+    record.status = "عمل إضافي";
+    record.overtimeMinutes = minutesDiff(now, threePM);
+  } else {
+    record.status = "انصراف طبيعي";
+  }
+
   attendance.push(record);
   res.status(201).json(record);
 });
 
-// 🌴 قسم الإجازات
-let leaves = [];
-app.get("/leaves", (req, res) => res.json(leaves));
-app.post("/leaves", (req, res) => {
-  const leave = { id: Date.now(), ...req.body };
-  leaves.push(leave);
-  res.status(201).json(leave);
+// ✅ المأموريات
+app.post("/missions", (req, res) => {
+  const { name, from, to } = req.body;
+  if (!name || !from || !to) return res.status(400).json({ error: "بيانات ناقصة" });
+  const fromD = new Date(from);
+  const toD = new Date(to);
+  const mins = minutesDiff(toD, fromD);
+  const m = { id: Date.now(), name, from, to, minutes: mins };
+  missions.push(m);
+  res.status(201).json(m);
 });
 
-// 📄 قسم الطلبات
-let requests = [];
-app.get("/requests", (req, res) => res.json(requests));
-app.post("/requests", (req, res) => {
-  const request = { id: Date.now(), ...req.body };
-  requests.push(request);
-  res.status(201).json(request);
-});
+// ✅ الإحصائيات والخصومات
+app.get("/summary", (req, res) => {
+  const { name } = req.query;
+  const now = new Date();
+  const mStart = startOfMonth(now).getTime();
+  const fyStart = startOfFiscalYear(now).getTime();
 
-// 📊 قسم التقارير
-app.get("/reports", (req, res) => {
+  const monthDelay = attendance
+    .filter((r) => new Date(r.checkIn || 0).getTime() >= mStart)
+    .filter((r) => (name ? r.name === name : true))
+    .reduce((s, r) => s + (r.status === "تأخير" ? r.delayMinutes || 0 : 0), 0);
+
+  const personalPermits = permits
+    .filter((p) => new Date(p.date).getTime() >= fyStart)
+    .filter((p) => (name ? p.name === name : true))
+    .reduce((s, p) => s + (p.type === "personal" ? p.minutes : 0), 0);
+
+  const overtimeDays = attendance
+    .filter((r) => (name ? r.name === name : true))
+    .filter((r) => r.status === "عمل إضافي").length;
+
+  const monthlyDeduction = monthDelay >= 95 ? 1 : 0;
+  const yearlyDeduction = Math.floor(personalPermits / 420);
+
   res.json({
-    employees: employees.length,
-    attendance: attendance.length,
-    leaves: leaves.length,
-    requests: requests.length,
+    name: name || "الكل",
+    monthDelay,
+    personalPermits,
+    overtimeDays,
+    monthlyDeduction,
+    yearlyDeduction,
   });
 });
 
-// ⚙️ قسم الإعدادات
-let settings = { workHours: "9:00 - 17:00", overtimeRate: 1.5 };
-app.get("/settings", (req, res) => res.json(settings));
-app.put("/settings", (req, res) => {
-  settings = { ...settings, ...req.body };
-  res.json(settings);
-});
-
-// 🧑‍💼 قسم الأدمن
-const admin = { username: "admin", password: "123456" };
-app.post("/admin/login", (req, res) => {
-  const { username, password } = req.body;
-  if (username === admin.username && password === admin.password)
-    res.json({ message: "Login successful", token: "staffsense-token" });
-  else res.status(401).json({ error: "Invalid credentials" });
-});
-
-// 🚀 تشغيل السيرفر
-app.listen(port, () => {
-  console.log(`✅ Full API running on port ${port}`);
-});
+app.listen(port, () =>
+  console.log(`✅ StaffSense HR API running on port ${port}`)
+);
